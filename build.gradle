@@ -61,21 +61,41 @@ dependencies {
     testRuntimeOnly group: 'org.junit.jupiter', name: 'junit-jupiter-engine', version: junitVersion
 }
 
-/**
- * Simplified for Gradle 9: no more exec() from the build script.
- * If you actually want the numeric test fixtures, run this once:
- *
- *   mkdir -p testdata
- *   cd testdata
- *   git clone https://github.com/nigeltao/parse-number-fxx-test-data.git
- */
-tasks.register('downloadTestData') {
+def testdataParent = layout.projectDirectory.dir("testdata")
+def repoDir = testdataParent.dir("parse-number-fxx-test-data")
+
+tasks.register('prepareTestDataDir') {
+    description = 'Create testdata/ directory if missing'
     doLast {
-        logger.lifecycle("Skipping automatic download of parse-number-fxx-test-data.")
-        logger.lifecycle("If needed, run manually:")
-        logger.lifecycle("  mkdir -p testdata && cd testdata")
-        logger.lifecycle("  git clone https://github.com/nigeltao/parse-number-fxx-test-data.git")
+        def parent = testdataParent.asFile
+        if (!parent.exists()) {
+            logger.lifecycle("Creating ${parent}")
+            parent.mkdirs()
+        }
     }
+}
+
+tasks.register('downloadTestData', Exec) {
+    description = 'Clone parse-number-fxx-test-data into testdata/ if missing'
+    group = 'verification'
+    dependsOn tasks.named('prepareTestDataDir')
+
+    // Run if repo dir missing OR empty (handles half-created directories)
+    onlyIf {
+        def d = repoDir.asFile
+        !d.exists() || (d.isDirectory() && (d.listFiles() == null || d.listFiles().length == 0))
+    }
+
+    workingDir testdataParent.asFile
+    commandLine 'git', 'clone', 'https://github.com/nigeltao/parse-number-fxx-test-data.git', 'parse-number-fxx-test-data'
+
+    doFirst {
+        logger.lifecycle("Cloning parse-number-fxx-test-data into ${repoDir.asFile}")
+    }
+}
+
+tasks.withType(Test).configureEach {
+    dependsOn tasks.named('downloadTestData')
 }
 
 tasks.register('test256', Test) {
