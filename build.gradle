@@ -28,17 +28,52 @@ repositories {
     mavenCentral()
 }
 
+// Dynamically resolve Java major version from:
+// 1) env BUILD_JAVA_VERSION (if set), else
+// 2) the JVM running Gradle (JavaVersion.current().majorVersion)
+//
+// Accepts values like: "24", "24.0.1", "24-ea", "24.0.2-tem", etc.
+static int resolveBuildJavaVersion() {
+    String v = System.getenv('BUILD_JAVA_VERSION') ?: JavaVersion.current().majorVersion
+
+    int dot = v.indexOf('.')
+    if (dot >= 0) {
+        v = v.substring(0, dot)
+    }
+
+    int dash = v.indexOf('-')
+    if (dash >= 0) {
+        v = v.substring(0, dash)
+    }
+
+    try {
+        return Integer.parseInt(v)
+    } catch (Exception e) {
+        throw new GradleException("Invalid BUILD_JAVA_VERSION '${System.getenv('BUILD_JAVA_VERSION')}'. " +
+                "Expected a Java major version like '24' (optionally with suffixes like '24.0.1' or '24-ea').", e)
+    }
+}
+
+// Usage
+def buildJavaVersion = resolveBuildJavaVersion()
+
+// recommended build java version is 25
+if (buildJavaVersion < 24) {
+    throw new GradleException(
+            "This build requires Java 24+.\n" +
+                    "Detected buildJavaVersion=${buildJavaVersion}.\n" +
+                    "Either run Gradle with JDK 24+ (JAVA_HOME / PATH), or set BUILD_JAVA_VERSION=24 (or higher)."
+    )
+}
+
 java {
-    // It seems that specifying the minimum supported Java version while allowing the use of newer
-    // ones isn't possible in Gradle. To test the library against multiple Java versions, the
-    // workaround proposed in https://github.com/gradle/gradle/issues/16256 has been applied:
-    if (!JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_24)) {
-        toolchain {
-            languageVersion = JavaLanguageVersion.of(24)
-        }
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(buildJavaVersion)
     }
     withJavadocJar()
     withSourcesJar()
+    sourceCompatibility = JavaVersion.toVersion(buildJavaVersion)
+    targetCompatibility = JavaVersion.toVersion(buildJavaVersion)
 }
 
 ext {
@@ -99,7 +134,9 @@ tasks.withType(Test).configureEach {
 }
 
 tasks.register('test256', Test) {
-    dependsOn downloadTestData
+    // IMPORTANT: run the normal test task first (no cycles)
+    dependsOn tasks.named('test')
+
     useJUnitPlatform()
     jvmArgs += [
             '--add-modules', 'jdk.incubator.vector',
@@ -112,7 +149,9 @@ tasks.register('test256', Test) {
 }
 
 tasks.register('test512', Test) {
-    dependsOn downloadTestData
+    // IMPORTANT: run the normal test task first (no cycles)
+    dependsOn tasks.named('test')
+
     useJUnitPlatform()
     jvmArgs += [
             '--add-modules', 'jdk.incubator.vector',
@@ -131,12 +170,15 @@ test {
     jvmArgs += [
             '--add-modules', 'jdk.incubator.vector', '-Xmx2g'
     ]
-    // still run the vector-width-specific tasks first
-    dependsOn 'test256'
-    dependsOn 'test512'
 
-    // and don't blow up if this particular task finds nothing
+    // Don't blow up if this particular task finds nothing
     failOnNoDiscoveredTests = false
+}
+
+// Recommended: `./gradlew check` runs all test variants
+tasks.named('check') {
+    dependsOn tasks.named('test256')
+    dependsOn tasks.named('test512')
 }
 
 tasks.withType(JmhBytecodeGeneratorTask).configureEach {
