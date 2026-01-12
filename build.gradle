@@ -16,7 +16,6 @@ plugins {
 scmVersion {
     versionCreator('versionWithBranch')
     tag {
-        // Property<String> in newer versions
         prefix.set('')
     }
 }
@@ -28,11 +27,7 @@ repositories {
     mavenCentral()
 }
 
-// Dynamically resolve Java major version from:
-// 1) env BUILD_JAVA_VERSION (if set), else
-// 2) the JVM running Gradle (JavaVersion.current().majorVersion)
-//
-// Accepts values like: "24", "24.0.1", "24-ea", "24.0.2-tem", etc.
+// --- Java Version Resolution ---
 static int resolveBuildJavaVersion() {
     String v = System.getenv('BUILD_JAVA_VERSION') ?: JavaVersion.current().majorVersion
 
@@ -54,10 +49,8 @@ static int resolveBuildJavaVersion() {
     }
 }
 
-// Usage
 def buildJavaVersion = resolveBuildJavaVersion()
 
-// recommended build java version is 25
 if (buildJavaVersion < 24) {
     throw new GradleException(
             "This build requires Java 24+.\n" +
@@ -96,6 +89,7 @@ dependencies {
     testRuntimeOnly group: 'org.junit.jupiter', name: 'junit-jupiter-engine', version: junitVersion
 }
 
+// --- Test Data Preparation ---
 def testdataParent = layout.projectDirectory.dir("testdata")
 def repoDir = testdataParent.dir("parse-number-fxx-test-data")
 
@@ -129,53 +123,49 @@ tasks.register('downloadTestData', Exec) {
     }
 }
 
+// Configuration common to ALL Test tasks (including 'test', 'test256', 'test512')
 tasks.withType(Test).configureEach {
     dependsOn tasks.named('downloadTestData')
-}
 
-tasks.register('test256', Test) {
-    // IMPORTANT: run the normal test task first (no cycles)
-    dependsOn tasks.named('test')
-
-    useJUnitPlatform()
-    jvmArgs += [
-            '--add-modules', 'jdk.incubator.vector',
-            '-Xmx2g',
-            '-Dorg.simdjson.species=256'
-    ]
+    // Fix: Ensure logging is visible in the console
     testLogging {
+        showStandardStreams = true
         events 'PASSED', 'SKIPPED', 'FAILED', 'STANDARD_OUT', 'STANDARD_ERROR'
+        exceptionFormat = 'full'
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
     }
 }
 
-tasks.register('test512', Test) {
-    // IMPORTANT: run the normal test task first (no cycles)
-    dependsOn tasks.named('test')
-
-    useJUnitPlatform()
-    jvmArgs += [
-            '--add-modules', 'jdk.incubator.vector',
-            '-Xmx2g',
-            '-Dorg.simdjson.species=512'
-    ]
-    testLogging {
-        events 'PASSED', 'SKIPPED', 'FAILED', 'STANDARD_OUT', 'STANDARD_ERROR'
-    }
-}
-
+// --- Test Variants (256/512) ---
 test {
-    // run JUnit 5 tests
     useJUnitPlatform()
-
     jvmArgs += [
             '--add-modules', 'jdk.incubator.vector', '-Xmx2g'
     ]
-
-    // Don't blow up if this particular task finds nothing
     failOnNoDiscoveredTests = false
 }
 
-// Recommended: `./gradlew check` runs all test variants
+// Generate test tasks for specific species (256, 512)
+[256, 512].each { species ->
+    tasks.register("test${species}", Test) {
+        group = 'verification'
+        description = "Runs tests with org.simdjson.species=${species}"
+
+        // Fix: Removed 'dependsOn test'. This allows test256 to run independently.
+        // We use mustRunAfter so they don't interleave output if run together via 'check'.
+        dependsOn tasks.named('test')
+
+        useJUnitPlatform()
+        jvmArgs += [
+                '--add-modules', 'jdk.incubator.vector',
+                '-Xmx2g',
+                "-Dorg.simdjson.species=${species}"
+        ]
+    }
+}
+
 tasks.named('check') {
     dependsOn tasks.named('test256')
     dependsOn tasks.named('test512')
@@ -190,7 +180,6 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.compileJmhScala.classpath = sourceSets.main.compileClasspath
-
 tasks.compileJmhJava.classpath += files(sourceSets.jmh.scala.classesDirectory)
 
 compileTestJava {
