@@ -1,5 +1,4 @@
 import me.champeau.jmh.JmhBytecodeGeneratorTask
-import org.ajoberstar.grgit.Grgit
 import org.gradle.internal.os.OperatingSystem
 
 import java.time.Duration
@@ -8,9 +7,8 @@ plugins {
     id 'java'
     id 'scala'
     id 'me.champeau.jmh' version '0.7.1'
-    id 'org.ajoberstar.grgit' version '5.2.0'
-    id 'pl.allegro.tech.build.axion-release' version '1.15.5'
-    id 'io.github.gradle-nexus.publish-plugin' version '1.3.0'
+    id 'pl.allegro.tech.build.axion-release' version '1.21.1'
+    id 'io.github.gradle-nexus.publish-plugin' version '2.0.0'
     id 'maven-publish'
     id 'signing'
 }
@@ -18,7 +16,7 @@ plugins {
 scmVersion {
     versionCreator('versionWithBranch')
     tag {
-        prefix = ''
+        prefix.set('')
     }
 }
 
@@ -29,17 +27,46 @@ repositories {
     mavenCentral()
 }
 
+// --- Java Version Resolution ---
+static int resolveBuildJavaVersion() {
+    String v = System.getenv('BUILD_JAVA_VERSION') ?: JavaVersion.current().majorVersion
+
+    int dot = v.indexOf('.')
+    if (dot >= 0) {
+        v = v.substring(0, dot)
+    }
+
+    int dash = v.indexOf('-')
+    if (dash >= 0) {
+        v = v.substring(0, dash)
+    }
+
+    try {
+        return Integer.parseInt(v)
+    } catch (Exception e) {
+        throw new GradleException("Invalid BUILD_JAVA_VERSION '${System.getenv('BUILD_JAVA_VERSION')}'. " +
+                "Expected a Java major version like '24' (optionally with suffixes like '24.0.1' or '24-ea').", e)
+    }
+}
+
+def buildJavaVersion = resolveBuildJavaVersion()
+
+if (buildJavaVersion < 24) {
+    throw new GradleException(
+            "This build requires Java 24+.\n" +
+                    "Detected buildJavaVersion=${buildJavaVersion}.\n" +
+                    "Either run Gradle with JDK 24+ (JAVA_HOME / PATH), or set BUILD_JAVA_VERSION=24 (or higher)."
+    )
+}
+
 java {
-    // It seems that specifying the minimum supported Java version while allowing the use of newer
-    // ones isn't possible in Gradle. To test the library against multiple Java versions, the
-    // workaround proposed in https://github.com/gradle/gradle/issues/16256 has been applied:
-    if (!JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_24)) {
-        toolchain {
-            languageVersion = JavaLanguageVersion.of(24)
-        }
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(buildJavaVersion)
     }
     withJavadocJar()
     withSourcesJar()
+    sourceCompatibility = JavaVersion.toVersion(buildJavaVersion)
+    targetCompatibility = JavaVersion.toVersion(buildJavaVersion)
 }
 
 ext {
@@ -62,49 +89,86 @@ dependencies {
     testRuntimeOnly group: 'org.junit.jupiter', name: 'junit-jupiter-engine', version: junitVersion
 }
 
-tasks.register('downloadTestData') {
+// --- Test Data Preparation ---
+def testdataParent = layout.projectDirectory.dir("testdata")
+def repoDir = testdataParent.dir("parse-number-fxx-test-data")
+
+tasks.register('prepareTestDataDir') {
+    description = 'Create testdata/ directory if missing'
+    doLast {
+        def parent = testdataParent.asFile
+        if (!parent.exists()) {
+            logger.lifecycle("Creating ${parent}")
+            parent.mkdirs()
+        }
+    }
+}
+
+tasks.register('downloadTestData', Exec) {
+    description = 'Clone parse-number-fxx-test-data into testdata/ if missing'
+    group = 'verification'
+    dependsOn tasks.named('prepareTestDataDir')
+
+    // Run if repo dir missing OR empty (handles half-created directories)
+    onlyIf {
+        def d = repoDir.asFile
+        !d.exists() || (d.isDirectory() && (d.listFiles() == null || d.listFiles().length == 0))
+    }
+
+    workingDir testdataParent.asFile
+    commandLine 'git', 'clone', 'https://github.com/nigeltao/parse-number-fxx-test-data.git', 'parse-number-fxx-test-data'
+
     doFirst {
-        def testDataDir = new File("${project.projectDir.getAbsolutePath()}/testdata")
-        if (!testDataDir.exists()) {
-            testDataDir.mkdir()
-        }
-        def numbersTestDataDir = new File("${testDataDir}/parse-number-fxx-test-data")
-        if (!numbersTestDataDir.exists()) {
-            def grgit = Grgit.clone(dir: numbersTestDataDir, uri: 'https://github.com/nigeltao/parse-number-fxx-test-data.git')
-            grgit.close()
-        }
+        logger.lifecycle("Cloning parse-number-fxx-test-data into ${repoDir.asFile}")
     }
 }
 
-tasks.register('test256', Test) {
-    dependsOn downloadTestData
-    useJUnitPlatform()
-    jvmArgs += [
-            '--add-modules', 'jdk.incubator.vector',
-            '-Xmx2g',
-            '-Dorg.simdjson.species=256'
-    ]
+// Configuration common to ALL Test tasks (including 'test', 'test256', 'test512')
+tasks.withType(Test).configureEach {
+    dependsOn tasks.named('downloadTestData')
+
+    // Fix: Ensure logging is visible in the console
     testLogging {
+        showStandardStreams = true
         events 'PASSED', 'SKIPPED', 'FAILED', 'STANDARD_OUT', 'STANDARD_ERROR'
+        exceptionFormat = 'full'
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
     }
 }
 
-tasks.register('test512', Test) {
-    dependsOn downloadTestData
-    useJUnitPlatform()
-    jvmArgs += [
-            '--add-modules', 'jdk.incubator.vector',
-            '-Xmx2g',
-            '-Dorg.simdjson.species=512'
-    ]
-    testLogging {
-        events 'PASSED', 'SKIPPED', 'FAILED', 'STANDARD_OUT', 'STANDARD_ERROR'
-    }
-}
-
+// --- Test Variants (256/512) ---
 test {
-    dependsOn 'test256'
-    dependsOn 'test512'
+    useJUnitPlatform()
+    jvmArgs += [
+            '--add-modules', 'jdk.incubator.vector', '-Xmx2g'
+    ]
+    failOnNoDiscoveredTests = false
+}
+
+// Generate test tasks for specific species (256, 512)
+[256, 512].each { species ->
+    tasks.register("test${species}", Test) {
+        group = 'verification'
+        description = "Runs tests with org.simdjson.species=${species}"
+
+        // Fix: Removed 'dependsOn test'. This allows test256 to run independently.
+        // We use mustRunAfter so they don't interleave output if run together via 'check'.
+        dependsOn tasks.named('test')
+
+        useJUnitPlatform()
+        jvmArgs += [
+                '--add-modules', 'jdk.incubator.vector',
+                '-Xmx2g',
+                "-Dorg.simdjson.species=${species}"
+        ]
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('test256')
+    dependsOn tasks.named('test512')
 }
 
 tasks.withType(JmhBytecodeGeneratorTask).configureEach {
@@ -116,7 +180,6 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.compileJmhScala.classpath = sourceSets.main.compileClasspath
-
 tasks.compileJmhJava.classpath += files(sourceSets.jmh.scala.classesDirectory)
 
 compileTestJava {
@@ -206,15 +269,21 @@ if (System.getenv('GPG_KEY_ID')) {
 nexusPublishing {
     repositories {
         sonatype {
-            nexusUrl = uri("https://ossrh-staging-api.central.sonatype.com/service/local/")
-            snapshotRepositoryUrl = uri("https://central.sonatype.com/repository/maven-snapshots/")
-            stagingProfileId = '3c0bbfe420699e'
-            username = System.getenv('SONATYPE_USERNAME')
-            password = System.getenv('SONATYPE_PASSWORD')
+            nexusUrl.set(uri("https://ossrh-staging-api.central.sonatype.com/service/local/"))
+            snapshotRepositoryUrl.set(uri("https://central.sonatype.com/repository/maven-snapshots/"))
+
+            if (System.getenv('SONATYPE_USERNAME')) {
+                username.set(System.getenv('SONATYPE_USERNAME'))
+            }
+            if (System.getenv('SONATYPE_PASSWORD')) {
+                password.set(System.getenv('SONATYPE_PASSWORD'))
+            }
+
+            stagingProfileId.set('3c0bbfe420699e')
         }
     }
-    connectTimeout = Duration.ofMinutes(3)
-    clientTimeout = Duration.ofMinutes(3)
+    connectTimeout.set(Duration.ofMinutes(3))
+    clientTimeout.set(Duration.ofMinutes(3))
 }
 
 def getBooleanProperty(String name, boolean defaultValue) {

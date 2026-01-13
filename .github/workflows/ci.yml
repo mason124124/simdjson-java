@@ -8,7 +8,7 @@ jobs:
 
     strategy:
       matrix:
-        version: [ 24 ]
+        version: [ 25 ]
         vector-length: [ 256, 512 ]
 
     steps:
