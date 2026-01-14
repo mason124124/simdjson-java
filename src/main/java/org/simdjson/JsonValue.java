@@ -6,7 +6,14 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.simdjson.Tape.*;
+import static org.simdjson.Tape.DOUBLE;
+import static org.simdjson.Tape.FALSE_VALUE;
+import static org.simdjson.Tape.INT64;
+import static org.simdjson.Tape.NULL_VALUE;
+import static org.simdjson.Tape.START_ARRAY;
+import static org.simdjson.Tape.START_OBJECT;
+import static org.simdjson.Tape.STRING;
+import static org.simdjson.Tape.TRUE_VALUE;
 
 public class JsonValue {
 
